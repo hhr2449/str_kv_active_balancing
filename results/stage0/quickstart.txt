@@ -1,0 +1,19 @@
+============================================================
+[1] transfer 失败率
+  ok=14  rejected=1494  成功率=0.93%
+    reason=broadcast    ok=   0 rejected= 615  成功率 0.0%
+    reason=proactive    ok=  14 rejected= 879  成功率 1.6%
+  失败原因分布:
+    - source residency probe failed: 1494
+  成功 transfer 的 token 数: min=128 p50=128 max=256
+============================================================
+[2] 命中率天花板
+  目标命中率 (cached_target/n_tokens) = 86.16%
+  实际命中率 (cached/prompt)         = 54.92%
+  潜在空间   (目标 - 实际)           = 31.24 个百分点
+============================================================
+[3] kvsim 基线（块=64, 前 50 条请求, N=6, C=2000，子集演示）
+    预期：AFF 命中高但 skew 大（失衡），LEAST 均衡但命中低，REQ 兼顾两者
+  AFF    hit=35.40%  skew= 5.12  saved=0.807M
+  LEAST  hit=32.41%  skew= 0.82  saved=0.738M
+  REQ    hit=43.58%  skew= 0.78  saved=0.993M

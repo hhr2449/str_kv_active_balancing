@@ -5,6 +5,7 @@
 """
 
 import json, math, random, sys
+import heapq
 from collections import defaultdict, deque
 from bisect import bisect_right
 
@@ -71,22 +72,22 @@ class PodCache:
             self._evict()
 
     def _evict(self):
+        if self.size <= self.cap:
+            return
+        # 同时间戳按递增 nid 选择，与原 nodes 插入顺序遍历的平手规则一致。
+        leaves = [(acc, nid) for nid, (par, b, acc) in self.nodes.items()
+                  if not self.children[nid]]
+        heapq.heapify(leaves)
         while self.size > self.cap:
-            best = None
-            best_t = None
-            for nid, (par, b, acc) in self.nodes.items():
-                if not self.children[nid]:
-                    if best_t is None or acc < best_t:
-                        best_t = acc
-                        best = nid
-            if best is None:
-                break
+            _, best = heapq.heappop(leaves)
             par, b, acc = self.nodes[best]
             del self.nodes[best]
             if par == -1:
                 del self.roots[b]
             else:
                 del self.children[par][b]
+                if not self.children[par]:
+                    heapq.heappush(leaves, (self.nodes[par][2], par))
             self.size -= 1
 
     def contains(self, blocks):

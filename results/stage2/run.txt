@@ -1,0 +1,10 @@
+{"trace": "/home/hhr/Nova2/srt/kvsim_multipod/offline_modeling_dataset_full/trace.jsonl", "trace_sha256": "3dfaf97280dcb3cbc4803e1253cc98109511ae27775c2b90b443d1560447513f", "simulator_sha256": "27ce0411c030a0b15f32caa6e843dab2a55c9842b6522fbc6dee2defd0d4213b", "requests": 548, "input_tokens": 26196338, "pods": 6, "capacity_blocks": 2000, "block_tokens": 64, "page_bytes": 14680064, "wire_accounting": "legacy_14_MiB_per_block", "time_unit": "ms", "equal_timestamp_order": "trace_file_order", "eval_start": 0, "eval_end": 599001, "random_gini_samples": 200, "random_gini_seed": 20260911, "common_parameters": {"theta": 2.0, "W": 300000, "infinite": false, "eval_start": 0, "eval_end": 599001, "cap2": 2, "depth_cap": null, "budget_bytes": null, "stable_broadcast": 0, "demand_weight_depth": true, "scan_limit": 1500}}
+mode	case	saved	hit_pct	skew	wire_GiB	pwire_GiB	seconds
+base	AFF	10984832	41.9327	16.5586	0.000000	0.000000	0.636
+base	LEAST	10836032	41.3647	0.6061	0.000000	0.000000	0.580
+base	REQ	17194176	65.6358	1.4061	405.111328	0.000000	0.774
+base	REQ theta=3	17062272	65.1323	2.3395	194.537109	0.000000	0.818
+idea2	AFF + broadcast1	10984896	41.9329	16.5586	0.000000	0.000000	0.592
+idea2	REQ + broadcast1	17194240	65.6360	1.4061	405.111328	0.000000	0.775
+idea2	REQ + broadcast4	17194304	65.6363	1.4061	405.111328	0.000000	0.804
+idea3	REQ + OracleCap2 dc=8	17253120	65.8608	0.3637	309.750000	2.843750	3.206

@@ -1,0 +1,324 @@
+{
+  "config": {
+    "trace": "/home/hhr/Nova2/srt/kvsim_multipod/offline_modeling_dataset_full/trace.jsonl",
+    "trace_sha256": "3dfaf97280dcb3cbc4803e1253cc98109511ae27775c2b90b443d1560447513f",
+    "simulator_sha256": "27ce0411c030a0b15f32caa6e843dab2a55c9842b6522fbc6dee2defd0d4213b",
+    "requests": 548,
+    "input_tokens": 26196338,
+    "pods": 6,
+    "capacity_blocks": 2000,
+    "block_tokens": 64,
+    "page_bytes": 14680064,
+    "wire_accounting": "legacy_14_MiB_per_block",
+    "time_unit": "ms",
+    "equal_timestamp_order": "trace_file_order",
+    "eval_start": 0,
+    "eval_end": 599001,
+    "random_gini_samples": 200,
+    "random_gini_seed": 20260911,
+    "common_parameters": {
+      "theta": 2.0,
+      "W": 300000,
+      "infinite": false,
+      "eval_start": 0,
+      "eval_end": 599001,
+      "cap2": 2,
+      "depth_cap": null,
+      "budget_bytes": null,
+      "stable_broadcast": 0,
+      "demand_weight_depth": true,
+      "scan_limit": 1500
+    }
+  },
+  "results": [
+    {
+      "mode": "base",
+      "case": "AFF",
+      "parameters": {
+        "theta": 2.0,
+        "W": 300000,
+        "infinite": false,
+        "eval_start": 0,
+        "eval_end": 599001,
+        "cap2": 2,
+        "depth_cap": null,
+        "budget_bytes": null,
+        "stable_broadcast": 0,
+        "demand_weight_depth": true,
+        "scan_limit": 1500,
+        "routing": "AFF"
+      },
+      "elapsed_seconds": 0.6356540780107025,
+      "metrics": {
+        "saved": 10984832,
+        "input": 26196338,
+        "token_hit": 0.41932700669841716,
+        "skew": 16.55857930783684,
+        "wire_GiB": 0.0,
+        "proactive_wire_GiB": 0.0,
+        "proactive_wire_full_GiB": 0.0,
+        "pod_req": [
+          544,
+          4,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "mode": "base",
+      "case": "LEAST",
+      "parameters": {
+        "theta": 2.0,
+        "W": 300000,
+        "infinite": false,
+        "eval_start": 0,
+        "eval_end": 599001,
+        "cap2": 2,
+        "depth_cap": null,
+        "budget_bytes": null,
+        "stable_broadcast": 0,
+        "demand_weight_depth": true,
+        "scan_limit": 1500,
+        "routing": "LEAST"
+      },
+      "elapsed_seconds": 0.579674371983856,
+      "metrics": {
+        "saved": 10836032,
+        "input": 26196338,
+        "token_hit": 0.41364682346059206,
+        "skew": 0.6060973392326808,
+        "wire_GiB": 0.0,
+        "proactive_wire_GiB": 0.0,
+        "proactive_wire_full_GiB": 0.0,
+        "pod_req": [
+          103,
+          88,
+          92,
+          86,
+          88,
+          91
+        ]
+      }
+    },
+    {
+      "mode": "base",
+      "case": "REQ",
+      "parameters": {
+        "theta": 2.0,
+        "W": 300000,
+        "infinite": false,
+        "eval_start": 0,
+        "eval_end": 599001,
+        "cap2": 2,
+        "depth_cap": null,
+        "budget_bytes": null,
+        "stable_broadcast": 0,
+        "demand_weight_depth": true,
+        "scan_limit": 1500,
+        "routing": "REQ"
+      },
+      "elapsed_seconds": 0.7736671000020579,
+      "metrics": {
+        "saved": 17194176,
+        "input": 26196338,
+        "token_hit": 0.6563579993509017,
+        "skew": 1.4061458270198195,
+        "wire_GiB": 405.111328125,
+        "proactive_wire_GiB": 0.0,
+        "proactive_wire_full_GiB": 0.0,
+        "pod_req": [
+          93,
+          107,
+          79,
+          80,
+          107,
+          82
+        ]
+      }
+    },
+    {
+      "mode": "base",
+      "case": "REQ theta=3",
+      "parameters": {
+        "theta": 3.0,
+        "W": 300000,
+        "infinite": false,
+        "eval_start": 0,
+        "eval_end": 599001,
+        "cap2": 2,
+        "depth_cap": null,
+        "budget_bytes": null,
+        "stable_broadcast": 0,
+        "demand_weight_depth": true,
+        "scan_limit": 1500,
+        "routing": "REQ"
+      },
+      "elapsed_seconds": 0.8176814489997923,
+      "metrics": {
+        "saved": 17062272,
+        "input": 26196338,
+        "token_hit": 0.6513227917581458,
+        "skew": 2.339535729438148,
+        "wire_GiB": 194.537109375,
+        "proactive_wire_GiB": 0.0,
+        "proactive_wire_full_GiB": 0.0,
+        "pod_req": [
+          117,
+          90,
+          58,
+          82,
+          112,
+          89
+        ]
+      }
+    },
+    {
+      "mode": "idea2",
+      "case": "AFF + broadcast1",
+      "parameters": {
+        "theta": 2.0,
+        "W": 300000,
+        "infinite": false,
+        "eval_start": 0,
+        "eval_end": 599001,
+        "cap2": 2,
+        "depth_cap": null,
+        "budget_bytes": null,
+        "stable_broadcast": 1,
+        "demand_weight_depth": true,
+        "scan_limit": 1500,
+        "routing": "AFF"
+      },
+      "elapsed_seconds": 0.591942172992276,
+      "metrics": {
+        "saved": 10984896,
+        "input": 26196338,
+        "token_hit": 0.4193294497879818,
+        "skew": 16.55857930783684,
+        "wire_GiB": 0.0,
+        "proactive_wire_GiB": 0.0,
+        "proactive_wire_full_GiB": 0.0,
+        "pod_req": [
+          544,
+          4,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "mode": "idea2",
+      "case": "REQ + broadcast1",
+      "parameters": {
+        "theta": 2.0,
+        "W": 300000,
+        "infinite": false,
+        "eval_start": 0,
+        "eval_end": 599001,
+        "cap2": 2,
+        "depth_cap": null,
+        "budget_bytes": null,
+        "stable_broadcast": 1,
+        "demand_weight_depth": true,
+        "scan_limit": 1500,
+        "routing": "REQ"
+      },
+      "elapsed_seconds": 0.7749131449963897,
+      "metrics": {
+        "saved": 17194240,
+        "input": 26196338,
+        "token_hit": 0.6563604424404663,
+        "skew": 1.4061458270198195,
+        "wire_GiB": 405.111328125,
+        "proactive_wire_GiB": 0.0,
+        "proactive_wire_full_GiB": 0.0,
+        "pod_req": [
+          93,
+          107,
+          79,
+          80,
+          107,
+          82
+        ]
+      }
+    },
+    {
+      "mode": "idea2",
+      "case": "REQ + broadcast4",
+      "parameters": {
+        "theta": 2.0,
+        "W": 300000,
+        "infinite": false,
+        "eval_start": 0,
+        "eval_end": 599001,
+        "cap2": 2,
+        "depth_cap": null,
+        "budget_bytes": null,
+        "stable_broadcast": 4,
+        "demand_weight_depth": true,
+        "scan_limit": 1500,
+        "routing": "REQ"
+      },
+      "elapsed_seconds": 0.8038618289865553,
+      "metrics": {
+        "saved": 17194304,
+        "input": 26196338,
+        "token_hit": 0.656362885530031,
+        "skew": 1.4061458270198195,
+        "wire_GiB": 405.111328125,
+        "proactive_wire_GiB": 0.0,
+        "proactive_wire_full_GiB": 0.0,
+        "pod_req": [
+          93,
+          107,
+          79,
+          80,
+          107,
+          82
+        ]
+      }
+    },
+    {
+      "mode": "idea3",
+      "case": "REQ + OracleCap2 dc=8",
+      "parameters": {
+        "theta": 2.0,
+        "W": 300000,
+        "infinite": false,
+        "eval_start": 0,
+        "eval_end": 599001,
+        "cap2": 2,
+        "depth_cap": 8,
+        "budget_bytes": null,
+        "stable_broadcast": 0,
+        "demand_weight_depth": true,
+        "scan_limit": 1500,
+        "routing": "REQ",
+        "policy": "Oracle"
+      },
+      "elapsed_seconds": 3.205691798008047,
+      "metrics": {
+        "saved": 17253120,
+        "input": 26196338,
+        "token_hit": 0.6586080848399498,
+        "skew": 0.36365840353960843,
+        "wire_GiB": 309.75,
+        "proactive_wire_GiB": 2.84375,
+        "proactive_wire_full_GiB": 2.84375,
+        "pod_req": [
+          90,
+          93,
+          95,
+          93,
+          85,
+          92
+        ]
+      }
+    }
+  ]
+}

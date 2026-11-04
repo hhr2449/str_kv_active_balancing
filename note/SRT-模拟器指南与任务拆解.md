@@ -174,10 +174,12 @@ python ft_local/kvsim_multipod.py conversation idea3     # Oracle 主动
 - 用 `request_meta.json` 的 `cached_target`/`n_tokens` 标定天花板（目标 86.2% vs 实际 ~56%，差距 = 主动干预的潜在空间）。
 
 ### 阶段 2：读懂模拟器 + 跑基线
+
 - 逐块读懂 `PodCache` / `run` 的三路由 + Oracle 主动策略（对照 §1）。
 - 跑 `base` / `idea2` / `idea3`，记录基线输出，作为改造后对照。
 
 ### 阶段 3：加存储分层
+
 - 3a. `PodCache` 拆 device/host 两层 + demote 语义；
 - 3b. 主动 transfer 加「source device 命中检查」；
 - 3c. 加 transfer 成败统计；

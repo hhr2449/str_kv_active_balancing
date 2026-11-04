@@ -48,7 +48,7 @@
         "scan_limit": 1500,
         "routing": "AFF"
       },
-      "elapsed_seconds": 0.6356540780107025,
+      "elapsed_seconds": 0.3411254940147046,
       "metrics": {
         "saved": 10984832,
         "input": 26196338,
@@ -84,7 +84,7 @@
         "scan_limit": 1500,
         "routing": "LEAST"
       },
-      "elapsed_seconds": 0.579674371983856,
+      "elapsed_seconds": 0.3588356620166451,
       "metrics": {
         "saved": 10836032,
         "input": 26196338,
@@ -120,7 +120,7 @@
         "scan_limit": 1500,
         "routing": "REQ"
       },
-      "elapsed_seconds": 0.7736671000020579,
+      "elapsed_seconds": 0.43894463501055725,
       "metrics": {
         "saved": 17194176,
         "input": 26196338,
@@ -156,7 +156,7 @@
         "scan_limit": 1500,
         "routing": "REQ"
       },
-      "elapsed_seconds": 0.8176814489997923,
+      "elapsed_seconds": 0.43321526498766616,
       "metrics": {
         "saved": 17062272,
         "input": 26196338,
@@ -192,7 +192,7 @@
         "scan_limit": 1500,
         "routing": "AFF"
       },
-      "elapsed_seconds": 0.591942172992276,
+      "elapsed_seconds": 0.36566112900618464,
       "metrics": {
         "saved": 10984896,
         "input": 26196338,
@@ -228,7 +228,7 @@
         "scan_limit": 1500,
         "routing": "REQ"
       },
-      "elapsed_seconds": 0.7749131449963897,
+      "elapsed_seconds": 0.4324560789973475,
       "metrics": {
         "saved": 17194240,
         "input": 26196338,
@@ -264,7 +264,7 @@
         "scan_limit": 1500,
         "routing": "REQ"
       },
-      "elapsed_seconds": 0.8038618289865553,
+      "elapsed_seconds": 0.501178330014227,
       "metrics": {
         "saved": 17194304,
         "input": 26196338,
@@ -301,7 +301,7 @@
         "routing": "REQ",
         "policy": "Oracle"
       },
-      "elapsed_seconds": 3.205691798008047,
+      "elapsed_seconds": 1.9844793690135702,
       "metrics": {
         "saved": 17253120,
         "input": 26196338,

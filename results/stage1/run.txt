@@ -1,0 +1,21 @@
+[1] 按 reason 统计传输成败
+reason	total	ok	rejected	success_rate
+broadcast	615	0	615	0.00%
+proactive	893	14	879	1.57%
+合计	1508	14	1494	0.93%
+
+[2] fail_message 分布
+1494 次	source residency probe failed: HTTP 400: {"rid":null,"http_worker_ipc":null,"success":false,"message
+
+[3] 成功传输的 token 长度分布
+requested_tokens	transferred_tokens	count
+128	128	9
+256	256	5
+
+[4] 目标命中率与实际命中率
+元数据请求数=548，实测请求数=548
+Σn_tokens=26196338，Σcached_target=22570688
+Σprompt_tokens=26185198，Σcached_tokens=14380544
+目标命中率（Σcached_target / Σn_tokens）=86.16%
+实际命中率（Σcached_tokens / Σprompt_tokens）=54.92%
+目标与实际差值=31.24 个百分点

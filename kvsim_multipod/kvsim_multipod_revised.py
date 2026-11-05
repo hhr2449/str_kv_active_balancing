@@ -3,6 +3,7 @@
 口径对齐学生 T2 补充实验：块=512 token=1 page；前缀树 + leaf-LRU；负载=最近60s miss tokens；
 命中 tokens = min(hit_depth*512, input_length)；wire 按 14 MiB/page；评价窗 [1500,2700)s。
 缓存事件周期发布到 gateway，主动策略每 5 秒评估；请求仍按瞬时完成处理。
+三种复制策略统一检查源端真实 Device，当前混合模型不支持 Host 直传。
 """
 
 import json, math, random, sys
@@ -109,6 +110,10 @@ class PodCache:
     def hit_depth(self, blocks, t, layer="local"):
         # 本地逐块复用两层缓存；指定 layer 可查询单层的连续驻留深度。
         return self._match_depth(blocks, layer, t)
+
+    def peek_depth(self, blocks, layer="local"):
+        # 源端驻留检查只读状态，不因探测失败刷新 LRU。
+        return self._match_depth(blocks, layer)
 
     def insert(self, blocks, t):
         parent = -1
@@ -344,21 +349,119 @@ def run(reqs, N, C, routing="AFF", policy=None, theta=2.0, W=300000, infinite=Fa
     proactive_wire_full = 0
     pod_req_eval = [0] * N
 
+    def new_transfer_stats():
+        # source_hits 分别统计各层完整命中，Device/Host 同时完整时均计数。
+        return {strategy: dict(skipped=0, skip_reasons={}, attempts=0, ok=0, failed=0,
+                               failure_reasons={}, success_rate=None,
+                               source_hits=dict(device_full=0, host_full=0, local_full=0),
+                               transferred_tokens=0, transferred_bytes=0)
+                for strategy in ("REQ", "broadcast", "oracle")}
+
+    # 同时保留全 Trace 与评价窗统计；明细用 in_eval 标记所属范围。
+    transfer_stats = new_transfer_stats()
+    transfer_stats_eval = new_transfer_stats()
+    transfer_events = []
+
+    def stats_for(strategy, t):
+        scopes = [transfer_stats[strategy]]
+        if eval_start <= t < eval_end:
+            scopes.append(transfer_stats_eval[strategy])
+        return scopes
+
+    def indexed_state(p, prefix):
+        if p is None:
+            return None
+        return dict(local_hit_blocks=gateway.hit_depth(p, prefix),
+                    device_hit_blocks=gateway.hit_depth(p, prefix, layer="device"),
+                    host_hit_blocks=gateway.hit_depth(p, prefix, layer="host"),
+                    device_size=gateway.device_sizes[p], host_size=gateway.host_sizes[p])
+
+    def decision_context(strategy, t, prefix, source, target):
+        # 决策信息在执行前保存，便于和后续真实源端探测对照。
+        return dict(strategy=strategy, timestamp_ms=t, in_eval=eval_start <= t < eval_end,
+                    source=source, target=target, prefix=tuple(prefix),
+                    requested_blocks=len(prefix), requested_tokens=len(prefix) * BLOCK,
+                    gateway=dict(holders=sorted(gateway.holders(prefix)) if prefix else [],
+                                 source=indexed_state(source, prefix),
+                                 target=indexed_state(target, prefix)))
+
+    def record_skip(strategy, reason, t, prefix=(), source=None, target=None):
+        for stats in stats_for(strategy, t):
+            stats["skipped"] += 1
+            stats["skip_reasons"][reason] = stats["skip_reasons"].get(reason, 0) + 1
+        event = decision_context(strategy, t, prefix, source, target)
+        event.update(event="decision_skip", status="skipped", reason=reason, attempted=False,
+                     source_probe=None, ok=None, transferred_tokens=0, transferred_bytes=0)
+        transfer_events.append(event)
+
     def publish_events(t):
         # 只有发布时才更新 gateway，worker 的真实状态不会直接写入索引。
         for p, queue in enumerate(kv_event_queues):
             while queue and queue[0].timestamp <= t:
                 gateway.apply(p, queue.popleft())
 
-    def copy_prefix(source, target, prefix, t, proactive=False):
+    def transfer_prefix(strategy, source, target, prefix, t):
         nonlocal wire_eval, proactive_wire_eval, proactive_wire_full
-        if source == target or not prefix:
+        prefix = tuple(prefix)
+        proactive = strategy != "REQ"
+        # 决策跳过只依据 gateway 和策略约束，不计入传输尝试或失败。
+        reason = None
+        if not prefix:
+            reason = "empty_prefix"
+        elif source is None or not gateway.contains(source, prefix):
+            reason = "no_source"
+        elif target is None:
+            reason = "no_target"
+        elif source == target:
+            reason = "same_pod"
+        elif gateway.contains(target, prefix):
+            reason = "target_has_prefix"
+        if reason is not None:
+            record_skip(strategy, reason, t, prefix, source, target)
             return False
         need = len(prefix) * PAGE_BYTES
+        # Oracle 的目标选择仍受 Host 剩余容量限制。
+        extra_host = len(prefix) - gateway.hit_depth(target, prefix, layer="host")
+        if strategy == "oracle" and not infinite and gateway.host_sizes[target] + extra_host > C:
+            record_skip(strategy, "target_capacity", t, prefix, source, target)
+            return False
         # 周期 Broadcast 和 Oracle 共用主动流量与预算口径。
         if proactive and budget_bytes is not None and proactive_wire_full + need > budget_bytes:
+            record_skip(strategy, "budget_exceeded", t, prefix, source, target)
             return False
-        # 本轮仍直接写入目标，源端 Device 校验后续接入；新副本也需等待事件发布。
+
+        event = decision_context(strategy, t, prefix, source, target)
+        device_depth = pods[source].peek_depth(prefix, layer="device")
+        host_depth = pods[source].peek_depth(prefix, layer="host")
+        local_depth = pods[source].peek_depth(prefix)
+        source_hits = dict(device_full=device_depth == len(prefix),
+                           host_full=host_depth == len(prefix), local_full=local_depth == len(prefix))
+        # 必须整段 Device 连续驻留；部分命中也不做部分传输或 Host 回退。
+        failure = None
+        if not source_hits["device_full"]:
+            failure = "host_direct_unsupported" if source_hits["local_full"] else "source_prefix_missing"
+        ok = failure is None
+        event.update(event="transfer", status="success" if ok else "failed", attempted=True,
+                     reason=failure, ok=ok,
+                     source_probe=dict(device_hit_blocks=device_depth, host_hit_blocks=host_depth,
+                                       local_hit_blocks=local_depth, **source_hits),
+                     transferred_tokens=len(prefix) * BLOCK if ok else 0,
+                     transferred_bytes=need if ok else 0)
+        for stats in stats_for(strategy, t):
+            stats["attempts"] += 1
+            stats["ok" if ok else "failed"] += 1
+            for name, full in source_hits.items():
+                stats["source_hits"][name] += int(full)
+            if failure is not None:
+                stats["failure_reasons"][failure] = stats["failure_reasons"].get(failure, 0) + 1
+            stats["transferred_tokens"] += event["transferred_tokens"]
+            stats["transferred_bytes"] += event["transferred_bytes"]
+        transfer_events.append(event)
+        if not ok:
+            return False
+
+        # 成功读取刷新源端 LRU，写入目标产生 KV Event，流量只累计成功传输。
+        pods[source].hit_depth(prefix, t, layer="device")
         pods[target].insert(prefix, t)
         if proactive:
             proactive_wire_full += need
@@ -374,11 +477,15 @@ def run(reqs, N, C, routing="AFF", policy=None, theta=2.0, W=300000, infinite=Fa
             prefix = (b,)
             holders = gateway.holders(prefix)
             if not holders:
+                record_skip("broadcast", "no_source", t, prefix)
                 continue
             source = min(holders, key=lambda p: (pod_load(p, t), p))
+            if len(holders) == N:
+                record_skip("broadcast", "all_targets_cached", t, prefix, source)
+                continue
             for target in range(N):
                 if target not in holders:
-                    copy_prefix(source, target, prefix, t, proactive=True)
+                    transfer_prefix("broadcast", source, target, prefix, t)
 
         if policy != "Oracle":
             return
@@ -390,6 +497,7 @@ def run(reqs, N, C, routing="AFF", policy=None, theta=2.0, W=300000, infinite=Fa
                 demand[reqs[j][3]] += 1
             j += 1
         if not demand:
+            record_skip("oracle", "no_demand", t)
             return
         best_chain = None
         best_score = -1
@@ -401,19 +509,23 @@ def run(reqs, N, C, routing="AFF", policy=None, theta=2.0, W=300000, infinite=Fa
                 best_chain = ch
         eff = min(len(best_chain), depth_cap) if depth_cap else len(best_chain)
         prefix = best_chain[:eff]
+        if not prefix:
+            record_skip("oracle", "empty_prefix", t)
+            return
         holders = gateway.holders(prefix)
-        if not prefix or not holders or len(holders) >= cap2:
+        if not holders:
+            record_skip("oracle", "no_source", t, prefix)
             return
         source = min(holders, key=lambda p: (pod_load(p, t), p))
+        if len(holders) >= cap2:
+            record_skip("oracle", "replica_limit", t, prefix, source)
+            return
         targets = [p for p in range(N) if p not in holders]
         if not targets:
+            record_skip("oracle", "no_target", t, prefix, source)
             return
         target = min(targets, key=lambda p: (pod_load(p, t), p))
-        # 容量预估也只使用已发布索引，已有 Host 副本不重复占用空间。
-        extra_host = len(prefix) - gateway.hit_depth(target, prefix, layer="host")
-        if not infinite and gateway.host_sizes[target] + extra_host > C:
-            return
-        copy_prefix(source, target, prefix, t, proactive=True)
+        transfer_prefix("oracle", source, target, prefix, t)
 
     # 两个周期都从 Trace 首个请求开始计时，不依赖宿主机时间。
     first_t = reqs[0][0] if reqs else 0
@@ -441,10 +553,11 @@ def run(reqs, N, C, routing="AFF", policy=None, theta=2.0, W=300000, infinite=Fa
                 if others and bl > theta * min(others):
                     target = min(range(N), key=lambda p: (pod_load(p, t), p))
                     prefix = h[:depths[src]]
-                    if prefix and target != src and not gateway.contains(target, prefix):
-                        # REQ 仍由当前请求触发，不等待下一个主动决策 tick。
-                        copy_prefix(src, target, prefix, t)
+                    transfer_prefix("REQ", src, target, prefix, t)
+                    # 复制失败仍在已选目标服务，由目标重算缺失部分。
                     src = target
+                else:
+                    record_skip("REQ", "not_overloaded", t, h[:depths[src]], src)
         elif routing == "LEAST":
             src = min(range(N), key=lambda p: (pod_load(p, t), p))
         else:
@@ -461,12 +574,21 @@ def run(reqs, N, C, routing="AFF", policy=None, theta=2.0, W=300000, infinite=Fa
         pods[src].insert(h, t)
         loads[src].append((t, miss))
 
+    for scope in (transfer_stats, transfer_stats_eval):
+        for stats in scope.values():
+            stats["success_rate"] = stats["ok"] / stats["attempts"] if stats["attempts"] else None
+    attempts = sum(stats["attempts"] for stats in transfer_stats.values())
+    ok = sum(stats["ok"] for stats in transfer_stats.values())
+    failed = sum(stats["failed"] for stats in transfer_stats.values())
     token_hit = saved_eval / input_eval if input_eval else 0.0
     skew = gini(pod_req_eval) / random_gini(N, sum(pod_req_eval)) if sum(pod_req_eval) else 0.0
     return dict(saved=saved_eval, input=input_eval, token_hit=token_hit, skew=skew,
                 wire_GiB=wire_eval / GIB, proactive_wire_GiB=proactive_wire_eval / GIB,
                 proactive_wire_full_GiB=proactive_wire_full / GIB,
-                pod_req=pod_req_eval)
+                pod_req=pod_req_eval, transfer_stats=transfer_stats,
+                transfer_stats_eval=transfer_stats_eval, transfer_events=transfer_events,
+                transfer_attempts=attempts, transfer_ok=ok, transfer_failed=failed,
+                transfer_success_rate=ok / attempts if attempts else None)
 
 
 if __name__ == "__main__":
@@ -484,6 +606,11 @@ if __name__ == "__main__":
         print(f"{tag:38s} saved={r['saved']/1e6:7.3f}M hit={r['token_hit']*100:5.2f}% "
               f"skew={r['skew']:6.2f} pwire={r['proactive_wire_GiB']:8.2f}GiB "
               f"pwirefull={r['proactive_wire_full_GiB']:9.2f}GiB saved/GBwire={sw}")
+        # 直接运行新版时也显示各策略成败，没有尝试则成功率显示 --。
+        for strategy, stats in r["transfer_stats"].items():
+            rate = "--" if stats["success_rate"] is None else f"{stats['success_rate'] * 100:.2f}%"
+            print(f"  {strategy:9s} skipped={stats['skipped']} attempts={stats['attempts']} "
+                  f"ok={stats['ok']} failed={stats['failed']} success={rate}")
 
     if mode in ("base", "all"):
         show("AFF", routing="AFF")

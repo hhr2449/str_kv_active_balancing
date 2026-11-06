@@ -1,4 +1,4 @@
-"""多 Pod KV Cache 回放模拟器 v3：同一棵前缀树上的 Device/Host 分层缓存。
+"""多 Pod KV Cache 回放模拟器 ：同一棵前缀树上的 Device/Host 分层缓存。
 
 口径对齐学生 T2 补充实验：块=512 token=1 page；前缀树 + leaf-LRU；负载=最近60s miss tokens；
 命中 tokens = min(hit_depth*512, input_length)；wire 按 14 MiB/page；评价窗 [1500,2700)s。
@@ -103,6 +103,10 @@ class PodCache:
         # 源端驻留检查只读状态，不因探测失败刷新 LRU。
         return self._match_depth(blocks, layer)
 
+    def can_receive(self, blocks):
+        # 当前无执行期保护，能装入两层的前缀均可通过 LRU 腾出空间。
+        return self.infinite or len(blocks) <= min(self.device_cap, self.host_cap)
+
     def insert(self, blocks, t):
         parent = -1
         for b in blocks:
@@ -131,20 +135,20 @@ class PodCache:
                 self._emit_event(nid, t)
             parent = nid
         # 请求按瞬时完成处理，写入后再回收，不设置执行期保护。
-        self._evict(t)
+        return self._evict(t)
 
     def _evict(self, t):
         if self.infinite:
-            return
-        self._evict_layer("device", t)
-        self._evict_layer("host", t)
+            return dict(device_blocks=0, host_blocks=0)
+        return dict(device_blocks=self._evict_layer("device", t),
+                    host_blocks=self._evict_layer("host", t))
 
     def _evict_layer(self, layer, t):
         cap = getattr(self, f"{layer}_cap")
         size_attr = f"{layer}_size"
         resident_attr = f"in_{layer}"
         if cap is None or getattr(self, size_attr) <= cap:
-            return
+            return 0
 
         # 两层各自做 leaf-LRU，另一层的子节点不会阻止本层回收。
         resident_children = defaultdict(int)
@@ -155,12 +159,14 @@ class PodCache:
         leaves = [(node.last_access, nid) for nid, node in self.nodes.items()
                   if getattr(node, resident_attr) and not resident_children[nid]]
         heapq.heapify(leaves)
+        evicted = 0
         while getattr(self, size_attr) > cap:
             _, best = heapq.heappop(leaves)
             node = self.nodes[best]
             # Device 回收即 demote，只清除 Device 状态，保留已有 Host 备份。
             setattr(node, resident_attr, False)
             setattr(self, size_attr, getattr(self, size_attr) - 1)
+            evicted += 1
             # 删除树节点之前记录事件，保证发布时仍有节点身份和父路径。
             self._emit_event(best, t)
             par = node.parent
@@ -170,6 +176,7 @@ class PodCache:
                 if getattr(parent_node, resident_attr):
                     heapq.heappush(leaves, (parent_node.last_access, par))
             self._prune_empty(best)
+        return evicted
 
     def _prune_empty(self, nid):
         # 两层都没有副本且没有子节点时，才删除树上的路径节点。
@@ -334,7 +341,8 @@ def run(reqs, N, C, routing="AFF", policy=None, theta=2.0, W=300000, infinite=Fa
     def new_transfer_stats():
         # 只保留启用策略；流量记字节，token 数按 PAGE_BYTES 和 BLOCK 换算。
         return {strategy: dict(skipped=0, skip_reasons={}, attempts=0, ok=0, failed=0,
-                               failure_reasons={}, success_rate=None, transferred_bytes=0)
+                               failure_reasons={}, success_rate=None, transferred_bytes=0,
+                               evicted_device_blocks=0, evicted_host_blocks=0)
                 for strategy, enabled in (("REQ", routing == "REQ"),
                                           ("broadcast", stable_broadcast > 0),
                                           ("oracle", policy == "Oracle")) if enabled}
@@ -379,6 +387,7 @@ def run(reqs, N, C, routing="AFF", policy=None, theta=2.0, W=300000, infinite=Fa
 
     def transfer_prefix(strategy, source, target, prefix, t):
         nonlocal wire_eval, proactive_wire_eval, proactive_wire_full
+        # None 表示决策跳过，True/False 表示已经尝试后的成功/失败。
         proactive = strategy != "REQ"
         # 决策跳过只依据 gateway 和策略约束，不计入传输尝试或失败。
         reason = None
@@ -394,18 +403,12 @@ def run(reqs, N, C, routing="AFF", policy=None, theta=2.0, W=300000, infinite=Fa
             reason = "target_has_prefix"
         if reason is not None:
             record_skip(strategy, reason, t, len(prefix), source, target)
-            return False
+            return None
         need = len(prefix) * PAGE_BYTES
-        # Oracle 的目标选择仍受 Host 剩余容量限制。
-        if strategy == "oracle" and not infinite:
-            extra_host = len(prefix) - gateway.hit_depth(target, prefix, layer="host")
-            if gateway.host_sizes[target] + extra_host > C:
-                record_skip(strategy, "target_capacity", t, len(prefix), source, target)
-                return False
         # 周期 Broadcast 和 Oracle 共用主动流量与预算口径。
         if proactive and budget_bytes is not None and proactive_wire_full + need > budget_bytes:
             record_skip(strategy, "budget_exceeded", t, len(prefix), source, target)
-            return False
+            return None
 
         # 只有实际尝试传输才保存决策时的源端、目标端索引信息。
         event = dict(event="transfer", strategy=strategy, timestamp_ms=t,
@@ -420,23 +423,31 @@ def run(reqs, N, C, routing="AFF", policy=None, theta=2.0, W=300000, infinite=Fa
         if device_depth < len(prefix):
             failure = "host_direct_unsupported" if local_depth == len(prefix) else "source_prefix_missing"
         ok = failure is None
+        evicted = dict(device_blocks=0, host_blocks=0)
+        if ok:
+            # 源端通过后才写入目标，由原有 leaf-LRU 回收；失败不会改动目标。
+            pods[source].hit_depth(prefix, t, layer="device")
+            evicted = pods[target].insert(prefix, t)
         event.update(ok=ok, reason=failure,
                      source_probe=dict(device_hit_blocks=device_depth, host_hit_blocks=host_depth,
                                        local_hit_blocks=local_depth),
-                     transferred_bytes=need if ok else 0)
+                     transferred_bytes=need if ok else 0,
+                     evicted_device_blocks=evicted["device_blocks"],
+                     evicted_host_blocks=evicted["host_blocks"])
         for stats in stats_for(strategy, t):
             stats["attempts"] += 1
             stats["ok" if ok else "failed"] += 1
             if failure is not None:
                 stats["failure_reasons"][failure] = stats["failure_reasons"].get(failure, 0) + 1
             stats["transferred_bytes"] += event["transferred_bytes"]
+            # 分层计数：Device 为回收/降层，Host 为备份淘汰，两者可能对应同一块。
+            stats["evicted_device_blocks"] += evicted["device_blocks"]
+            stats["evicted_host_blocks"] += evicted["host_blocks"]
         transfer_events.append(event)
         if not ok:
             return False
 
-        # 成功读取刷新源端 LRU，写入目标产生 KV Event，流量只累计成功传输。
-        pods[source].hit_depth(prefix, t, layer="device")
-        pods[target].insert(prefix, t)
+        # 写入已产生 KV Event，流量只累计成功传输。
         if proactive:
             proactive_wire_full += need
             if eval_start <= t < eval_end:
@@ -467,39 +478,40 @@ def run(reqs, N, C, routing="AFF", policy=None, theta=2.0, W=300000, infinite=Fa
         demand = defaultdict(int)
         j = next_request
         while j < len(reqs) and reqs[j][0] <= t + W and j - next_request < scan_limit:
-            if reqs[j][3]:
-                demand[reqs[j][3]] += 1
+            hashes = reqs[j][3]
+            prefix = hashes[:depth_cap] if depth_cap else hashes
+            if prefix:
+                # 候选身份、热度、副本数与实际复制对象使用同一个前缀。
+                demand[prefix] += 1
             j += 1
         if not demand:
             record_skip("oracle", "no_demand", t)
             return
-        best_chain = None
-        best_score = -1
-        for ch, dd in demand.items():
-            eff = min(len(ch), depth_cap) if depth_cap else len(ch)
-            score = dd * eff if demand_weight_depth else dd
-            if score > best_score:
-                best_score = score
-                best_chain = ch
-        eff = min(len(best_chain), depth_cap) if depth_cap else len(best_chain)
-        prefix = best_chain[:eff]
-        if not prefix:
-            record_skip("oracle", "empty_prefix", t)
-            return
-        holders = gateway.holders(prefix)
-        if not holders:
-            record_skip("oracle", "no_source", t, len(prefix))
-            return
-        source = min(holders, key=lambda p: (pod_load(p, t), p))
-        if len(holders) >= cap2:
-            record_skip("oracle", "replica_limit", t, len(prefix), source)
-            return
-        targets = [p for p in range(N) if p not in holders]
-        if not targets:
-            record_skip("oracle", "no_target", t, len(prefix), source)
-            return
-        target = min(targets, key=lambda p: (pod_load(p, t), p))
-        transfer_prefix("oracle", source, target, prefix, t)
+        candidates = sorted(demand, key=lambda prefix: demand[prefix] * len(prefix)
+                            if demand_weight_depth else demand[prefix], reverse=True)
+        for prefix in candidates:
+            holders = gateway.holders(prefix)
+            if not holders:
+                record_skip("oracle", "no_source", t, len(prefix))
+                continue
+            source = min(holders, key=lambda p: (pod_load(p, t), p))
+            if len(holders) >= cap2:
+                record_skip("oracle", "replica_limit", t, len(prefix), source)
+                continue
+            targets = [p for p in range(N) if p not in holders]
+            if not targets:
+                record_skip("oracle", "no_target", t, len(prefix), source)
+                continue
+            # 只读检查接收上限，不要求当前有空闲，也不提前执行淘汰。
+            targets = [p for p in targets if pods[p].can_receive(prefix)]
+            if not targets:
+                record_skip("oracle", "target_capacity", t, len(prefix), source)
+                continue
+            target = min(targets, key=lambda p: (pod_load(p, t), p))
+            result = transfer_prefix("oracle", source, target, prefix, t)
+            # 条件跳过可换候选；源端已经拒绝也算一次尝试，本 tick 不再重试。
+            if result is not None:
+                return
 
     # 两个周期都从 Trace 首个请求开始计时，不依赖宿主机时间。
     first_t = reqs[0][0] if reqs else 0

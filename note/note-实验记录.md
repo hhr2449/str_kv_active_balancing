@@ -399,7 +399,7 @@ REQ先按照AFF选择，如果过载（$Load_{\text{亲和 Pod}} > \theta \times
 
 其中有两种干预方式
 
-**broadcast**
+**a. broadcast**
 
 > [!important]
 >
@@ -423,7 +423,7 @@ stable_broadcast = 4
 
 当前 Broadcast 是直接预置缓存，代码没有为它计算传输量。
 
-**oracle**
+**b. oracle**
 
 是 request_driven 的，在每条请求服务完成后进行
 
@@ -455,6 +455,18 @@ depth_cap = 8 blocks
 
 这里 `depth_cap=8`，在当前 64-token 块大小下，对应最多复制 512 tokens 的前缀。
 
+
+
+这里要特别提及holders
+
+`holders`是oracle使用的缓存副本记录表：`holders = defaultdict(set)`
+
+结构是`完整的请求哈希链 → Pod 编号集合`
+
+请求服务完成或是主动干预完成后，会将前缀链记录进holders中
+
+oracle策略选出要复制的热链之后会去查询holders，只有当持有这个热链的pod足够少（小于cap2）的时候才会启动复制，复制的target是负载最低的pod
+
 ### 模拟结果
 
 | **模式 / 方案**               | **保存数 (saved)** | **命中率 (hit_pct)** | **倾斜度 (skew)** | **网络流量 (wire_GiB)** |
@@ -478,5 +490,203 @@ depth_cap = 8 blocks
 
    REQ本身就能够针对当前请求复制命中最高的前缀cache，所以oracle在命中率方面优化小，但是提前调度较热前缀可以明显改善请求分布，减少请求到来后的被动复制
 
+> [!tip]
+>
+> 已经完成了leaf-LRU的堆优化
+
+## stage 3
+
+> 加存储分层，复现实验中的transfer成功率基本为0的结论
+
+### 模拟器修改要点
+
+1. 修改前缀树，添加host和device状态
+
+   前缀树记录前缀路径，每个节点分别记录对应缓存是否在host和device中，并分别统计两层的容量占用
+
+   device中的缓存被回收后，如果host中仍有备份，则前缀仍然可以用于本地复用，但是不能直接从device传输
+
+   > 这里通过修改节点的驻留状态来实现分层，而不是分成两颗前缀树
+
+2. 增加demote语义和写直达策略
+
+   缓存进入device，同时将缓存备份到host。当前请求的缓存收到保护，不能demote，不被保护的缓存在容量压力下允许从device中淘汰，host本身也需要管理容量和淘汰
+
+   整个过程可以通过修改前缀树的节点状态实现
+
+3. 建立gateway索引和KV Event队列
+
+   实际系统中，gateway处会维护一份缓存索引，记录各个pod持有的前缀，进行路由决策和主动干预的时候使用gateway的索引
+
+   worker新增或删除缓存时产生event，event先进入本地队列，再周期性发布并更新gateway，因此gateway的记录可能落后于实际的缓存状态，这也是传输失败的原因之一
+
+   在模拟器中建立gateway索引和kv event队列，还需要确定event发布的周期（暂时作为未知参数）
+
+4. 区分pods的实际状态和gateway的索引状态
+
+   `pods`对应实际的cache，统计真实命中、检查source能否传输时使用这个状态，缓存插入、备份、demote、淘汰和传输成功都应该修改这个状态
+
+   `gateway`用于路由和主动干预，选择source、target以及统计前缀副本数量时使用这个索引，索引根据收到的event更新
+
+5. 增加主动干预的调度时钟
+
+   原本oracle是request_driven的，在每条请求服务完成后执行，根因调查文档提到gateway的主动决策有5s的tick，因此将oracle和broadcast改为周期性评估，REQ中的按需复制仍由请求触发
+
+   不需要维护一个连续流动的时间，只需要在两个请求之间，按时间顺序处理应该发生的主动决策和event发布，每次直接跳到下一个事件的时间
+
+6. 所有前缀复制使用同一套传输逻辑
+
+   REQ、broadcast和oracle中的前缀复制都走统一的传输入口
+
+   ```text
+   决策器根据gateway索引选定source、target、前缀
+       ↓
+   根据source的真实状态检查完整前缀
+       ↓
+   成功：插入target，累计KV传输量，产生相应的缓存事件
+   失败：记录原因和失败次数，不插入target
+   ```
+
+   当前混合模型要求source的device中有完整的待传输前缀，host直传不支持mamba，因此只有host备份时也会失败
+
+   REQ复制失败后仍然将请求交给选定的target，由target重新计算缺失的部分
+
+7. 增加事件记录
+
+   | 类型 | 需要记录的内容 |
+   | --- | --- |
+   | 决策跳过 | 没有source、达到副本上限、目标容量不足、预算不足 |
+   | 传输尝试 | 类型、时间、source、target、请求前缀长度、决策时的索引信息 |
+   | 源端检查 | 实际device命中深度、host命中情况 |
+   | 执行结果 | 成功、完整前缀仅在host、源端前缀已缺失 |
+   | 收益与成本 | 原有命中指标、成功传输量 |
+
+   REQ、broadcast和oracle分别统计尝试次数、成功次数、失败次数和成功率，决策跳过不计入传输失败，没有尝试时成功率显示为`--`
 
 
+
+
+### 第一次测试结果
+
+```python
+python3 scripts/stage3_baseline.py --device-cap 456 --event-publish-interval-ms 1000
+```
+
+
+
+
+
+| **Case**                          | **Saved Tokens** | **Hit Rate** | **Skew** | **Wire (GiB)** | **Proactive Wire (GiB)** | **Runtime (s)** |
+| --------------------------------- | ---------------- | ------------ | -------- | -------------- | ------------------------ | --------------- |
+| **base AFF**                      | 10,984,832       | 41.93%       | 16.56    | 0.00           | 0.00                     | 2.64            |
+| **base LEAST**                    | 10,836,032       | 41.36%       | 0.61     | 0.00           | 0.00                     | 2.69            |
+| **base REQ**                      | 16,130,432       | 61.58%       | 1.35     | 30.30          | 0.00                     | 2.73            |
+| **base REQ ($\theta=3$)**         | 16,674,880       | 63.65%       | 2.41     | 23.58          | 0.00                     | 2.71            |
+| **idea2 AFF + broadcast1**        | 10,984,832       | 41.93%       | 16.56    | 0.00           | 0.08                     | 2.64            |
+| **idea2 REQ + broadcast1**        | 16,130,496       | 61.58%       | 1.35     | 30.30          | 0.01                     | 2.62            |
+| **idea2 REQ + broadcast4**        | 16,130,240       | 61.57%       | 1.35     | 30.30          | 0.22                     | 2.63            |
+| **idea3 REQ + OracleCap2 (dc=8)** | 16,130,432       | 61.58%       | 1.35     | 30.30          | 0.00                     | 3.24            |
+
+| **Case**                          | **Channel**       | **Skipped** | **Attempts** | **OK** | **Failed** | **Success Rate** | **Primary Failure Reason**                                   |
+| --------------------------------- | ----------------- | ----------- | ------------ | ------ | ---------- | ---------------- | ------------------------------------------------------------ |
+| **base REQ**                      | `REQ`             | 512         | 36           | 8      | 28         | 22.22%           | `host_direct_unsupported` (28)                               |
+| **base REQ ($\theta=3$)**         | `REQ`             | 528         | 20           | 6      | 14         | 30.00%           | `host_direct_unsupported` (14)                               |
+| **idea2 AFF + broadcast1**        | `broadcast`       | 117         | 6            | 6      | 0          | 100.00%          | None                                                         |
+| **idea2 REQ + broadcast1**        | `REQ` `broadcast` | 512 118     | 36 1         | 8 1    | 28 0       | 22.22% 100.00%   | `host_direct_unsupported` (28) None                          |
+| **idea2 REQ + broadcast4**        | `REQ` `broadcast` | 512 211     | 36 111       | 8 16   | 28 95      | 22.22% 14.41%    | `host_direct_unsupported` (28) `host_direct_unsupported` (95) |
+| **idea3 REQ + OracleCap2 (dc=8)** | `REQ` `oracle`    | 512 119     | 36 0         | 8 0    | 28 0       | 22.22% --        | `host_direct_unsupported` (28) None                          |
+
+
+
+- 不涉及传输的AFF和LEAST策略几乎不变
+
+- oracle策略没有发起复制，而不是复制失败
+
+  ```
+  Oracle 候选不满足副本数或容量条件 → 没有发起复制 → 没有增量收益
+  ```
+
+  | Oracle 行为      | 旧版 | 新版 |
+  | ---------------- | ---- | ---- |
+  | 决策次数         | 548  | 119  |
+  | 标记为成功的复制 | 26   | 0    |
+  | 副本上限跳过     | 0    | 110  |
+  | 目标容量跳过     | 521  | 9    |
+  | 无未来需求       | 1    | 0    |
+
+  有几个实现的问题：
+
+  1. 旧版的副本上限判断使用的是完整的链
+
+     ```python
+     len(holders.get(ch, set())) < cap2
+     ```
+
+     所以所有的副本上限判断都可以通过。实际上副本上限判断应该判断的是要进行复制的那个前缀链
+
+  2. 热度统计问题
+
+     原本模拟器的实现是按照完整链来统计复用次数，实际上应该要统计的是复制部分的未来复用次数
+
+  3. 复制的缓存行为
+
+     设置了目标容量不足的时候跳过是否合理
+
+  4. 目前的oracle复制只要不满足条件就会结束这次复制，是否应该进行重新选择？
+
+- REQ大部分复制都遇到了传输失败，但是还是有少部分成功，REQ仍然有收益
+
+- broadcast1完全成功，broadcast4成功率低，原因调查：
+
+  1. 548 条请求只有 **两种首块**，分别出现 544 次和 4 次；后续块仍然有很多不同内容
+  2. 广播每次复制的前缀长度固定为 **1 block＝64 tokens**
+  3. **只要选中的 source 的 device 中存在这个首块，当前模拟器就会判定复制成功**，所以自然broadcast1成功率很高，因为它选择广播的块是大部分请求的首块，几乎一定会出现在device种
+
+  > [!warning]
+  >
+  > 需要进一步确认broadcast全部失败的原因
+  >
+  > 所有548条请求中只有两种不同的首块，其中一种只有4个请求，大部分时间device中应该都会保留最热门的块，所以对于broadcast1，应该大部分时候都能从device中拿到要传输的块
+  >
+  > 按照根因调查文档中的失败机理，仅仅是因为device中没有full-kv的话不应该引起broadcast的全部失败
+
+  > [!tip]
+  >
+  > 推测：模拟器中没有考虑mamba state的影响，实际sglang的前缀匹配应该会回退到具有有效mamba状态的边界，所以可能出现：
+  >
+  > ```
+  > 前 64 tokens 的 attention KV：有
+  > 处理完第 64 个 token 后的 Mamba 状态 S₆₄：没有
+  > ```
+  >
+  > sglang中的match_prefix函数返回的长度会回退到有mamba state的边界，如果source中的检查使用match_prefix返回的长度来检查device和host是否含有要复制的前缀，就会出现错误拒绝导致广播失败，所以真实实验中出现广播全部失败的问题
+
+
+
+### 修改oracle实现
+
+1. 使用复制部分前缀统计热度和统计副本数
+2. 即使目标满了也正常复制
+3. 不满足条件时重新选取
+
+oracle可以发生，但是仍达不到传输失败的要求，传输成功率42.55
+
+| **Case**                          | **Channel**       | **Skipped** | **Attempts** | **OK** | **Failed** | **Success Rate**  | **Primary Failure Reason**                                   |
+| --------------------------------- | ----------------- | ----------- | ------------ | ------ | ---------- | ----------------- | ------------------------------------------------------------ |
+| **base REQ**                      | `REQ`             | 512         | 36           | 8      | 28         | 22.22%            | `host_direct_unsupported` (28)                               |
+| **base REQ ($\theta=3$)**         | `REQ`             | 528         | 20           | 6      | 14         | 30.00%            | `host_direct_unsupported` (14)                               |
+| **idea2 AFF + broadcast1**        | `broadcast`       | 117         | 6            | 6      | 0          | 100.00%           | None                                                         |
+| **idea2 REQ + broadcast1**        | `REQ` `broadcast` | 512 118     | 36 1         | 8 1    | 28 0       | 22.22% 100.00%    | `host_direct_unsupported` (28) None                          |
+| **idea2 REQ + broadcast4**        | `REQ` `broadcast` | 512 211     | 36 111       | 8 16   | 28 95      | 22.22% 14.41%     | `host_direct_unsupported` (28) `host_direct_unsupported` (95) |
+| **idea3 REQ + OracleCap2 (dc=8)** | `REQ` `oracle`    | 517 392     | 31 47        | 7 20   | 24 27      | 22.58% **42.55%** | `host_direct_unsupported` (24) `host_direct_unsupported` (27) |
+
+| **Case**                          | **Saved Tokens** | **Hit Rate** | **Skew** | **Wire (GiB)** | **Proactive Wire (GiB)** | **Runtime (s)** |
+| --------------------------------- | ---------------- | ------------ | -------- | -------------- | ------------------------ | --------------- |
+| **base AFF**                      | 10,984,832       | 41.93%       | 16.56    | 0.00           | 0.00                     | 1.61            |
+| **base LEAST**                    | 10,836,032       | 41.36%       | 0.61     | 0.00           | 0.00                     | 1.74            |
+| **base REQ**                      | 16,130,432       | 61.58%       | 1.35     | 30.30          | 0.00                     | 1.71            |
+| **base REQ ($\theta=3$)**         | **16,674,880**   | **63.65%**   | 2.41     | 23.58          | 0.00                     | 1.73            |
+| **idea2 AFF + broadcast1**        | 10,984,832       | 41.93%       | 16.56    | 0.00           | 0.08                     | 1.90            |
+| **idea2 REQ + broadcast1**        | 16,130,496       | 61.58%       | 1.35     | 30.30          | 0.01                     | 1.86            |
+| **idea2 REQ + broadcast4**        | 16,130,240       | 61.57%       | 1.35     | 30.30          | 0.22                     | 1.68            |
+| **idea3 REQ + OracleCap2 (dc=8)** | 16,386,432       | 62.55%       | 1.85     | 27.95          | 2.19                     | 1.86            |

@@ -652,14 +652,7 @@ python3 scripts/stage3_baseline.py --device-cap 456 --event-publish-interval-ms 
 
   > [!tip]
   >
-  > 推测：模拟器中没有考虑mamba state的影响，实际sglang的前缀匹配应该会回退到具有有效mamba状态的边界，所以可能出现：
-  >
-  > ```
-  > 前 64 tokens 的 attention KV：有
-  > 处理完第 64 个 token 后的 Mamba 状态 S₆₄：没有
-  > ```
-  >
-  > sglang中的match_prefix函数返回的长度会回退到有mamba state的边界，如果source中的检查使用match_prefix返回的长度来检查device和host是否含有要复制的前缀，就会出现错误拒绝导致广播失败，所以真实实验中出现广播全部失败的问题
+  > 推测：真实测试的时候可能最热门的块能够通过正常请求铺开，broadcast想要传输的基本上都是出现较少的块，所以全部shi'bai
 
 
 
